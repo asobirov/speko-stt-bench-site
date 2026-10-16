@@ -73,13 +73,13 @@
 
 <section id="robust">
   <div class="card explain">
-    <b>How to read this.</b> Each provider transcribed the <b>same 100 FLEURS English clips</b> eight times: once clean, and
+    <b>How to read this.</b> Each provider transcribed the <b>same <span id="nNoise"></span> FLEURS English clips</b> <span id="nCond"></span> times: once clean, and
     once for each degraded version (white/crowd/TV noise mixed in at 10 dB = speech clearly louder than the noise,
     or 0 dB = speech and noise equally loud; "phone" = 300–3400 Hz band, 8 kHz, μ-law, like a normal phone call).
     <br><b>WER</b> = % of reference words the provider got wrong (substituted + deleted + inserted).
     <b>"vs clean"</b> = how many percentage points worse than the <i>same provider on the same clean clips</i>.
     For example, 5% → 12% shows as <b>+7 pts</b>, so 7 more words wrong out of every 100.
-    These are point estimates. RESULTS.md has the confidence intervals; click any cell to open those clips.
+    These are point estimates, computed by the same code as RESULTS.md, which also has the confidence intervals. Click any cell to open those clips.
   </div>
   <div id="robustTable" class="scroll"></div>
 </section>
@@ -87,6 +87,7 @@
 <section id="clips" class="hidden">
   <div class="controls">
     <select id="fDataset"></select>
+    <select id="fSubset"><option value="">all clips</option></select>
     <select id="fLang"></select>
     <select id="fCond"></select>
     <label><input type="checkbox" id="fErr"> only clips where someone made an error</label>
@@ -101,9 +102,9 @@
 
 <section id="latency" class="hidden">
   <div class="card explain">
-    Batch latency study only (warm-up calls excluded): one request at a time, the same clips for every provider, 3 rounds.
+    Batch latency study only (warm-up calls excluded): one request at a time, the same <span id="nLatClips"></span> clips for every provider, <span id="nRounds"></span> rounds.
     Each dot is one call. Lines mark <b>p50</b> (half the calls were faster) and <b>p95</b> (only 1 in 20 was slower).
-    A <span style="color:var(--warn)">yellow</span> dot means the call had to open a new connection (TCP+TLS inside the timer). Grey = not recorded (Gemini is upload + transcribe, two requests).
+    A <span style="color:var(--warn)">yellow</span> dot means the call had to open a new connection (TCP+TLS inside the timer). Grey = not recorded (two-step providers: upload, then transcribe).
   </div>
   <div id="latChart" class="card scroll"></div>
   <div class="controls"><select id="lProv"></select><span class="muted">sorted slowest first</span></div>
@@ -118,8 +119,7 @@
 const $ = s => document.querySelector(s);
 const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
 let D, byKey = new Map(), clipById = new Map();
-const COND_LABEL = {clean:"clean", white_10:"white noise 10 dB", white_0:"white noise 0 dB", crowd_10:"crowd 10 dB",
-  crowd_0:"crowd 0 dB", tv_10:"TV 10 dB", tv_0:"TV 0 dB", phone:"phone line (8 kHz)"};
+let COND_LABEL = {};
 
 document.querySelectorAll("header button").forEach(b => b.onclick = () => showTab(b.dataset.tab));
 function showTab(t) {
@@ -133,49 +133,41 @@ function heat(v) {
   const a = Math.min(1, v / 40);
   return `background: rgba(248,81,73,${(a * 0.55).toFixed(2)})`;
 }
-function nearestRank(sorted, p) { return sorted[Math.max(0, Math.ceil(p / 100 * sorted.length) - 1)]; }
 
 fetch("data/index.json").then(r => r.json()).then(d => {
-  D = d;
+  D = d; COND_LABEL = d.conditionLabels;
   for (const it of d.items) byKey.set(`${it.p}|${it.c}|${it.id}`, it);
   for (const c of d.clips) clipById.set(c.id, c);
-  $("#status").textContent = `${d.items.length.toLocaleString()} scored transcripts · ${d.latency.length} latency calls · ${d.captures.length} captures`;
+  $("#status").textContent = `${d.items.length.toLocaleString()} scored transcripts · ${d.latency.filter(r => r.latency_ms != null).length} latency calls · ${d.captures.length} captures`;
   renderRobust(); initClips(); initLatency();
 });
 fetch("data/RESULTS.md").then(r => r.text()).then(t => { $("#md").innerHTML = window.marked ? marked.parse(t) : `<pre>${esc(t)}</pre>`; });
 
 // ---------------------------------------------------------------- robustness
-function corpus(provider, cond, ids) {
-  let e = 0, w = 0, n = 0, empty = 0, missing = 0;
-  for (const id of ids) {
-    const it = byKey.get(`${provider}|${cond}|${id}`);
-    if (!it || it.s === "unmeasured") { missing++; continue; }
-    e += it.e; w += it.w; n++; if (it.s === "empty") empty++;
-  }
-  return {wer: wer(e, w), n, empty, missing};
-}
 function renderRobust() {
-  const ids = D.clips.filter(c => c.subsets.includes("noise100")).map(c => c.id);
+  const R = D.robust;
+  $("#nNoise").textContent = R.n; $("#nCond").textContent = D.conditions.length;
   let h = `<table><tr><th>Provider</th>` + D.conditions.map(c => `<th class="num">${COND_LABEL[c]}</th>`).join("") + `</tr>`;
-  for (const p of D.providers) {
-    const base = corpus(p, "clean", ids);
-    if (base.n === 0) continue;
+  for (const [p, row] of Object.entries(R.rows)) {
     h += `<tr><td><b>${p}</b></td>`;
     for (const c of D.conditions) {
-      const r = corpus(p, c, ids);
-      if (r.n === 0) { h += `<td class="num muted">not run</td>`; continue; }
-      const d = r.wer - base.wer;
-      const delta = c === "clean" ? `<div class="muted">baseline</div>`
-        : `<div style="color:${d > 5 ? "var(--bad)" : d > 1 ? "var(--warn)" : "var(--ok)"}">${d >= 0 ? "+" : "−"}${Math.abs(d).toFixed(1)} pts vs clean</div>`;
-      const notes = (r.empty ? `<div class="muted">${r.empty} empty</div>` : "") + (r.missing ? `<div class="muted">${r.missing} missing</div>` : "");
-      h += `<td class="num" style="cursor:pointer;${heat(r.wer)}" onclick="jump('${c}','fleurs')">${r.wer.toFixed(1)}%${delta}${notes}</td>`;
+      const r = row[c];
+      if (!r) { h += `<td class="num muted">not run</td>`; continue; }
+      if (r.incomplete) { h += `<td class="num muted">incomplete<div>${r.n}/${r.of} clips</div></td>`; continue; }
+      const d = r.delta;
+      const delta = c === "clean" ? `<div class="muted">baseline</div>` : d == null ? "" :
+        `<div style="color:${d > 5 ? "var(--bad)" : d > 1 ? "var(--warn)" : "var(--ok)"}">${d >= 0 ? "+" : "−"}${Math.abs(d).toFixed(1)} pts vs clean</div>`;
+      const notes = (r.empty ? `<div class="muted">${r.empty} empty</div>` : "") + (r.failed ? `<div class="muted">${r.failed} failed</div>` : "");
+      h += `<td class="num" style="cursor:pointer;${heat(r.wer)}" onclick="jump('${c}')">${r.wer.toFixed(1)}%${delta}${notes}</td>`;
     }
     h += `</tr>`;
   }
-  $("#robustTable").innerHTML = h + `</table><p class="muted">"empty" = the provider returned no words for that clip (scored as all words missed).</p>`;
+  $("#robustTable").innerHTML = h + `</table><p class="muted">"empty" = the provider returned no words for that clip (scored as all words missed). "incomplete" = some clips were not measured (key/quota), so no number is shown, as in RESULTS.md.</p>`;
 }
-function jump(cond, dataset) {
-  showTab("clips"); $("#fCond").value = cond; $("#fDataset").value = dataset; $("#fErr").checked = true; renderClips();
+function jump(cond) {
+  showTab("clips");
+  $("#fCond").value = cond; $("#fDataset").value = ""; $("#fLang").value = D.robust.lang; $("#fSubset").value = D.robust.subset;
+  $("#fText").value = ""; $("#fErr").checked = false; renderClips();
 }
 
 // ---------------------------------------------------------------- clips
@@ -187,17 +179,19 @@ function initClips() {
   opts($("#fDataset"), [...new Set(D.clips.map(c => c.dataset))], "all datasets");
   opts($("#fLang"), [...new Set(D.clips.map(c => c.lang))], "all languages");
   opts($("#fCond"), D.conditions);
-  ["#fDataset", "#fLang", "#fCond", "#fErr", "#fText"].forEach(s => $(s).oninput = renderClips);
+  $("#fSubset").innerHTML += `<option value="${D.robust.subset}">the ${D.robust.n} noise/phone clips</option>`;
+  ["#fDataset", "#fSubset", "#fLang", "#fCond", "#fErr", "#fText"].forEach(s => $(s).oninput = renderClips);
   renderClips();
 }
 function renderClips() {
-  const ds = $("#fDataset").value, lang = $("#fLang").value, cond = $("#fCond").value, onlyErr = $("#fErr").checked;
+  const ds = $("#fDataset").value, subset = $("#fSubset").value, lang = $("#fLang").value, cond = $("#fCond").value, onlyErr = $("#fErr").checked;
   const text = $("#fText").value.toLowerCase();
   const provs = D.providers;
   let rows = [];
   for (const c of D.clips) {
     if (ds && c.dataset !== ds) continue;
     if (lang && c.lang !== lang) continue;
+    if (subset && !c.subsets.includes(subset)) continue;
     if (text && !c.ref.toLowerCase().includes(text)) continue;
     const cells = provs.map(p => byKey.get(`${p}|${cond}|${c.id}`));
     if (cells.every(x => !x)) continue;
@@ -208,12 +202,16 @@ function renderClips() {
   }
   const key = r => sortCol === "worst" ? r.worst : sortCol === "id" ? r.c.id : sortCol === "dur" ? r.c.dur : (r.w[sortCol] ?? -1);
   rows.sort((a, b) => (key(a) > key(b) ? 1 : key(a) < key(b) ? -1 : 0) * sortDir);
-  // corpus WER over the filtered set: sum of errors / sum of reference words, like the report
+  // Corpus rate over the filtered set (sum of errors / sum of reference units), only when every clip shares one
+  // metric and every clip has a result: words and characters must never be pooled, and a gap would change the set.
+  const metrics = new Set(rows.map(r => r.c.metric));
+  const metric = metrics.size === 1 ? [...metrics][0].toUpperCase() : "WER/CER";
   const totals = provs.map((p, i) => {
-    let e = 0, w = 0; for (const r of rows) { const x = r.cells[i]; if (x && x.s !== "unmeasured") { e += x.e; w += x.w; } }
+    if (metrics.size !== 1) return "mixed";
+    let e = 0, w = 0;
+    for (const r of rows) { const x = r.cells[i]; if (!x || x.s === "unmeasured") return "–"; e += x.e; w += x.w; }
     return w ? (100 * e / w).toFixed(2) + "%" : "–";
   });
-  const metric = rows[0]?.c.metric === "cer" ? "CER" : "WER";
   let h = `<tr><th onclick="sortBy('id')">Clip</th><th class="num" onclick="sortBy('dur')">s</th>` +
     provs.map((p, i) => `<th class="num" onclick="sortBy(${i})">${p}</th>`).join("") + `<th class="num" onclick="sortBy('worst')">worst</th></tr>`;
   h += `<tr><td class="muted">corpus ${metric} (this filter)</td><td></td>` + totals.map(t => `<td class="num"><b>${t}</b></td>`).join("") + `<td></td></tr>`;
@@ -227,6 +225,7 @@ function renderClips() {
       }).join("") + `<td class="num">${r.worst.toFixed(0)}</td></tr>`;
   }
   $("#clipTable").innerHTML = h;
+  if (metrics.size !== 1) $("#clipTable").insertAdjacentHTML("beforeend", `<tr><td colspan="${provs.length + 3}" class="muted">No corpus total: this filter mixes word-scored and character-scored (Japanese) clips. Pick a language.</td></tr>`);
   $("#clipCount").textContent = `${rows.length} clips${rows.length > 600 ? " (showing 600)" : ""} · cells = ${metric} % per clip · ∅ empty · ✕ failed · n/m not measured (key/quota)`;
   document.querySelectorAll("tr.clip").forEach(tr => tr.onclick = () => {
     document.querySelectorAll("tr.sel").forEach(x => x.classList.remove("sel")); tr.classList.add("sel"); openClip(tr.dataset.id, cond);
@@ -242,14 +241,16 @@ function renderOps(ops, sep) {
     if (o.t === "insert") return `<span class="tok t-ins" title="extra word">${esc(o.h.join(sep))}</span>`;
   }).join(sep);
 }
+let openSeq = 0;
 async function openClip(id, cond) {
-  const c = clipById.get(id);
+  const c = clipById.get(id), seq = ++openSeq;
   const d = await (await fetch(`data/clips/${encodeURIComponent(id)}.json`)).json();
+  if (seq !== openSeq) return;  // a newer clip was opened while this one loaded
   const conds = D.conditions.filter(k => d.byCond[k]);
   let h = `<div style="display:flex;justify-content:space-between;align-items:center"><b>${esc(id)}</b><span class="muted">${c.dataset} · ${c.lang} · ${c.dur}s</span></div>`;
   h += `<div class="controls" style="margin-top:8px"><select id="dCond">${conds.map(k => `<option value="${k}" ${k === cond ? "selected" : ""}>${COND_LABEL[k]}</option>`).join("")}</select></div>`;
   h += `<audio id="player" controls preload="none" style="width:100%" src="audio/${encodeURIComponent(id)}/${cond}.mp3"></audio>`;
-  h += `<p><span class="muted">Reference:</span> ${esc(d.ref)}</p>`;
+  h += `<p><span class="muted">Reference:</span> ${esc(c.ref)}</p>`;
   h += `<p class="legend muted"><span class="tok t-sub">substituted</span><span class="tok t-del">missed</span><span class="tok t-ins">extra</span> (compared after normalization, which is what is scored; the small struck-out word is what the reference said)</p>`;
   h += `<div id="hyps"></div>`;
   $("#detail").innerHTML = `<button class="close" onclick="$('#detail').classList.remove('open')">Close</button>` + h;
@@ -271,25 +272,24 @@ async function openClip(id, cond) {
 
 // ---------------------------------------------------------------- latency
 function initLatency() {
-  const provs = [...new Set(D.latency.map(r => r.provider))];
-  const W = Math.max(340, Math.min(1100, window.innerWidth - 60)), rowH = 46, left = W < 600 ? 78 : 110, maxMs = Math.max(...D.latency.filter(r => r.latency_ms).map(r => r.latency_ms));
-  const xMax = Math.min(maxMs, 6000), x = v => left + (Math.min(v, xMax) / xMax) * (W - left - 20);
+  const L = D.latencySummary, provs = L.providers.map(t => t.provider);
+  $("#nLatClips").textContent = L.clips; $("#nRounds").textContent = L.rounds;
+  const ok = D.latency.filter(r => r.latency_ms != null);
+  const W = Math.max(340, Math.min(1100, window.innerWidth - 60)), rowH = 46, left = W < 600 ? 78 : 110;
+  const xMax = Math.min(Math.max(1000, ...ok.map(r => r.latency_ms)), 6000), x = v => left + (Math.min(v, xMax) / xMax) * (W - left - 20);
   let s = `<svg width="100%" viewBox="0 0 ${W} ${provs.length * rowH + 30}">`;
   for (let t = 0; t <= xMax; t += W < 600 ? 2000 : 1000) s += `<line x1="${x(t)}" x2="${x(t)}" y1="0" y2="${provs.length * rowH}" stroke="#2a2f3a"/><text x="${x(t)}" y="${provs.length * rowH + 16}" text-anchor="middle">${t} ms</text>`;
-  const stats = [];
-  provs.forEach((p, i) => {
-    const rs = D.latency.filter(r => r.provider === p && r.latency_ms != null);
-    const v = rs.map(r => r.latency_ms).sort((a, b) => a - b);
-    const p50 = nearestRank(v, 50), p95 = nearestRank(v, 95), y = i * rowH + rowH / 2;
-    stats.push({p, n: v.length, p50, p95, recon: rs.some(r => r.reconnected != null) ? rs.filter(r => r.reconnected).length : null, failed: D.latency.filter(r => r.provider === p && r.latency_ms == null).length});
-    s += `<text x="0" y="${y + 4}" style="fill:#e6e8ee;font-size:13px">${p}</text>`;
-    rs.forEach((r, j) => s += `<circle cx="${x(r.latency_ms)}" cy="${y + ((j * 7919) % 21) - 10}" r="2.2" fill="${r.reconnected ? "#d29922" : r.reconnected == null ? "#8b93a7" : "#6ea8fe"}" opacity=".7"><title>${r.fixture_id} round ${r.round}: ${r.latency_ms.toFixed(0)} ms</title></circle>`);
-    s += `<line x1="${x(p50)}" x2="${x(p50)}" y1="${y - 16}" y2="${y + 16}" stroke="#3fb950" stroke-width="2"/><line x1="${x(p95)}" x2="${x(p95)}" y1="${y - 16}" y2="${y + 16}" stroke="#f85149" stroke-width="2"/>`;
+  L.providers.forEach((t, i) => {
+    const y = i * rowH + rowH / 2, sync = t.kind === "sync";
+    s += `<text x="0" y="${y + 4}" style="fill:#e6e8ee;font-size:13px">${t.provider}</text>`;
+    ok.filter(r => r.provider === t.provider).forEach((r, j) => s += `<circle cx="${x(r.latency_ms)}" cy="${y + ((j * 7919) % 21) - 10}" r="2.2" fill="${!sync ? "#8b93a7" : r.reconnected ? "#d29922" : "#6ea8fe"}" opacity=".7"><title>${r.fixture_id} round ${r.round}: ${r.latency_ms.toFixed(0)} ms</title></circle>`);
+    if (t.p50 != null) s += `<line x1="${x(t.p50)}" x2="${x(t.p50)}" y1="${y - 16}" y2="${y + 16}" stroke="#3fb950" stroke-width="2"/><line x1="${x(t.p95)}" x2="${x(t.p95)}" y1="${y - 16}" y2="${y + 16}" stroke="#f85149" stroke-width="2"/>`;
   });
   s += `</svg>`;
-  s += `<table style="width:auto;margin-top:8px"><tr><th>Provider</th><th class="num">calls</th><th class="num" style="color:var(--ok)">p50</th><th class="num" style="color:var(--bad)">p95</th><th class="num">new connection</th><th class="num">failed</th></tr>` +
-    stats.map(t => `<tr><td>${t.p}</td><td class="num">${t.n}</td><td class="num">${t.p50.toFixed(0)} ms</td><td class="num">${t.p95.toFixed(0)} ms</td><td class="num">${t.recon == null ? "n/a (two-step)" : t.recon + "/" + t.n}</td><td class="num">${t.failed}</td></tr>`).join("") +
-    `</table><p class="muted">Computed here with the same nearest-rank rule as RESULTS.md, so these should match it; the axis is clipped at ${xMax} ms.</p>`;
+  const f = v => v == null ? "n/a" : `${Math.round(v).toLocaleString()} ms`;
+  s += `<table style="width:auto;margin-top:8px"><tr><th>Provider</th><th class="num">ok / attempted</th><th class="num" style="color:var(--ok)">p50</th><th class="num" style="color:var(--bad)">p95</th><th class="num">new connection</th></tr>` +
+    L.providers.map(t => `<tr><td>${t.provider}</td><td class="num">${t.ok} / ${t.attempted}</td><td class="num">${f(t.p50)}</td><td class="num">${f(t.p95)}</td><td class="num">${t.reconnects == null ? "n/a (two-step)" : t.reconnects + " / " + t.ok}</td></tr>`).join("") +
+    `</table><p class="muted">Same numbers and code as RESULTS.md section 1 (nearest-rank percentiles); the chart axis is clipped at ${xMax.toLocaleString()} ms.</p>`;
   $("#latChart").innerHTML = s;
   opts($("#lProv"), provs);
   $("#lProv").oninput = drawLatTable; drawLatTable();
@@ -299,7 +299,7 @@ function drawLatTable() {
   const rs = D.latency.filter(r => r.provider === p).sort((a, b) => (b.latency_ms ?? 1e9) - (a.latency_ms ?? 1e9));
   const f = v => v == null ? "–" : v.toFixed(0);
   $("#latTable").innerHTML = `<tr><th>Clip</th><th class="num">round</th><th class="num">audio s</th><th class="num">total ms</th><th class="num">connect</th><th class="num">TLS</th><th class="num">headers</th><th>new conn.</th><th>error</th></tr>` +
-    rs.map(r => `<tr><td><a href="#" style="color:var(--acc)" onclick="showTab('clips');$('#fCond').value='clean';$('#fDataset').value='';renderClips();openClip('${r.fixture_id}','clean');return false">${r.fixture_id}</a></td><td class="num">${r.round}</td><td class="num">${r.audio_duration_s}</td><td class="num"><b>${f(r.latency_ms)}</b></td><td class="num">${f(r.connect_ms)}</td><td class="num">${f(r.tls_ms)}</td><td class="num">${f(r.headers_ms)}</td><td>${r.reconnected ? "yes" : ""}</td><td class="muted">${esc(r.error || "")}</td></tr>`).join("");
+    rs.map(r => `<tr><td><a href="#" style="color:var(--acc)" onclick="showTab('clips');$('#fCond').value='clean';$('#fDataset').value='';$('#fSubset').value='';$('#fLang').value='';renderClips();openClip('${r.fixture_id}','clean');return false">${r.fixture_id}</a></td><td class="num">${r.round}</td><td class="num">${r.audio_duration_s}</td><td class="num"><b>${f(r.latency_ms)}</b></td><td class="num">${f(r.connect_ms)}</td><td class="num">${f(r.tls_ms)}</td><td class="num">${f(r.headers_ms)}</td><td>${r.reconnected ? "yes" : ""}</td><td class="muted">${esc(r.error || "")}</td></tr>`).join("");
 }
 </script>
 </body>
