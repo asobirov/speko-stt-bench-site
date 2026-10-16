@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex">
+<meta name="format-detection" content="telephone=no">
 <title>speko-stt-bench viewer</title>
 <script src="https://cdn.jsdelivr.net/npm/marked@12/marked.min.js"></script>
 <style>
@@ -19,7 +20,7 @@
   .hidden { display:none !important; }
   table { border-collapse:collapse; width:100%; }
   th, td { padding:5px 8px; border-bottom:1px solid var(--line); text-align:left; vertical-align:top; }
-  th { color:var(--mute); font-weight:500; position:sticky; top:49px; background:var(--bg); cursor:pointer; white-space:nowrap; }
+  th { color:var(--mute); font-weight:500; background:var(--bg); cursor:pointer; white-space:nowrap; }
   td.num, th.num { text-align:right; font-variant-numeric:tabular-nums; white-space:nowrap; }
   .refw { color:var(--mute); font-size:11px; margin-right:3px; }
   tr.clip:hover { background:var(--panel); cursor:pointer; }
@@ -40,7 +41,7 @@
   .raw { color:var(--mute); font-size:12px; margin-top:2px; }
   .pill { display:inline-block; padding:0 6px; border-radius:10px; font-size:12px; border:1px solid var(--line); }
   .md table { width:auto; }
-  .md th { position:static; cursor:default; }
+  .md th { cursor:default; }
   .md code { background:var(--panel); padding:1px 4px; border-radius:4px; }
   .md a { color:var(--acc); }
   .explain { color:var(--mute); max-width:900px; }
@@ -50,7 +51,6 @@
     main { padding:10px; }
     header { position:static; }
     header b { width:100%; }
-    th { position:static; }
     .split { grid-template-columns: 1fr; }
     .detail { display:none; position:fixed; inset:0; top:0; max-height:none; margin:0; border-radius:0; z-index:10; }
     .detail.open { display:block; }
